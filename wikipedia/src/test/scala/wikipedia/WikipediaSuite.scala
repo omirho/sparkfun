@@ -113,6 +113,9 @@ class WikipediaSuite extends FunSuite with BeforeAndAfterAll {
       )
     val rdd = sc.parallelize(articles)
     val index = makeIndex(langs, rdd)
+    println(index.count())
+    println(index.keys.collect().toList)
+    println(index)
     val res = index.count() == 2
     assert(res)
   }
