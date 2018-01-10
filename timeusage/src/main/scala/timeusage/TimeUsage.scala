@@ -63,14 +63,19 @@ object TimeUsage {
     * @param columnNames Column names of the DataFrame
     */
   def dfSchema(columnNames: List[String]): StructType =
-    ???
+    StructType(
+      StructField(columnNames.head, StringType, nullable = false) ::
+      columnNames.tail.map(StructField(_, DoubleType, nullable = false))
+    )
 
 
   /** @return An RDD Row compatible with the schema produced by `dfSchema`
     * @param line Raw fields
     */
   def row(line: List[String]): Row =
-    ???
+    Row(
+      line.head.toString :: line.tail.map(_.toDouble) : _*
+    )
 
   /** @return The initial data frame columns partitioned in three groups: primary needs (sleeping, eating, etc.),
     *         work and other (leisure activities)
@@ -88,7 +93,20 @@ object TimeUsage {
     *    “t10”, “t12”, “t13”, “t14”, “t15”, “t16” and “t18” (those which are not part of the previous groups only).
     */
   def classifiedColumns(columnNames: List[String]): (List[Column], List[Column], List[Column]) = {
-    ???
+    val classes = List(
+      List("t01", "t03", "t11", "t1801", "t1803"),
+      List("t05", "t1805"),
+      List("t02", "t04", "t06", "t07", "t08", "t09", "t10", "t12", "t13", "t14", "t15", "t16", "t18")
+    ).zipWithIndex
+
+    val classified = columnNames.flatMap(name => {
+      classes.find(_._1.exists(name.startsWith))
+        .map(c => (c._2, new Column(name)))
+    }).groupBy(_._1)
+      .mapValues(_.map(_._2))
+
+    val results = (0 to 2) map { classified.getOrElse(_, List.empty[Column]) }
+    (results(0), results(1), results(2))
   }
 
   /** @return a projection of the initial DataFrame such that all columns containing hours spent on primary needs
@@ -131,17 +149,29 @@ object TimeUsage {
     // more sense for our use case
     // Hint: you can use the `when` and `otherwise` Spark functions
     // Hint: don’t forget to give your columns the expected name with the `as` method
-    val workingStatusProjection: Column = ???
-    val sexProjection: Column = ???
-    val ageProjection: Column = ???
+    val workingStatusProjection: Column =
+      when('telfs.between(1, 3), "working")
+        .otherwise("not working") as 'working
+
+    val sexProjection: Column =
+      when('tesex === 1, "male")
+        .otherwise("female") as 'sex
+
+    val ageProjection: Column =
+      when('teage.between(15, 22), "young")
+        .when('teage.between(23, 55), "active")
+        .otherwise("elder") as 'age
 
     // Create columns that sum columns of the initial dataset
     // Hint: you want to create a complex column expression that sums other columns
     //       by using the `+` operator between them
     // Hint: don’t forget to convert the value to hours
-    val primaryNeedsProjection: Column = ???
-    val workProjection: Column = ???
-    val otherProjection: Column = ???
+    def sumReduceToHours = (columns: List[Column]) => columns.reduce(_ + _).divide(60)
+
+    val primaryNeedsProjection: Column = sumReduceToHours(primaryNeedsColumns) as 'primaryNeeds
+    val workProjection: Column = sumReduceToHours(workColumns) as 'work
+    val otherProjection: Column = sumReduceToHours(otherColumns) as 'other
+
     df
       .select(workingStatusProjection, sexProjection, ageProjection, primaryNeedsProjection, workProjection, otherProjection)
       .where($"telfs" <= 4) // Discard people who are not in labor force
@@ -165,7 +195,13 @@ object TimeUsage {
     * Finally, the resulting DataFrame should be sorted by working status, sex and age.
     */
   def timeUsageGrouped(summed: DataFrame): DataFrame = {
-    ???
+    summed.groupBy('working, 'sex, 'age)
+      .agg(
+        round(avg('primaryNeeds), 1) as 'primaryNeeds,
+        round(avg('work), 1) as 'work,
+        round(avg('other), 1) as 'other
+      )
+      .orderBy('working, 'sex, 'age)
   }
 
   /**
@@ -182,7 +218,8 @@ object TimeUsage {
     * @param viewName Name of the SQL view to use
     */
   def timeUsageGroupedSqlQuery(viewName: String): String =
-    ???
+    s"select working, sex, age, round(avg(primaryNeeds), 1) as primaryNeeds, round(avg(work), 1) as work, round(avg(other), 1) as other " +
+      s"from $viewName group by working, sex, age order by working, sex, age"
 
   /**
     * @return A `Dataset[TimeUsageRow]` from the “untyped” `DataFrame`
@@ -192,7 +229,7 @@ object TimeUsage {
     * cast them at the same time.
     */
   def timeUsageSummaryTyped(timeUsageSummaryDf: DataFrame): Dataset[TimeUsageRow] =
-    ???
+    timeUsageSummaryDf.as[TimeUsageRow]
 
   /**
     * @return Same as `timeUsageGrouped`, but using the typed API when possible
@@ -206,8 +243,20 @@ object TimeUsage {
     * Hint: you should use the `groupByKey` and `typed.avg` methods.
     */
   def timeUsageGroupedTyped(summed: Dataset[TimeUsageRow]): Dataset[TimeUsageRow] = {
-    import org.apache.spark.sql.expressions.scalalang.typed
-    ???
+    import org.apache.spark.sql.expressions.scalalang.typed.avg
+
+    def round(d: Double) = (d * 10).round / 10d
+
+    summed.groupByKey(row => (row.working, row.sex, row.age))
+      .agg(
+          avg(_.primaryNeeds),
+          avg(_.work),
+          avg(_.other)
+      )
+      .map {
+        case ((w, s, a), p, wo, o) => TimeUsageRow(w, s, a, round(p), round(wo), round(o))
+      }
+      .orderBy('working, 'sex, 'age)
   }
 }
 
